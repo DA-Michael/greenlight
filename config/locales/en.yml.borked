@@ -58,7 +58,7 @@ en:
         warning: This setting will only be applied to rooms that aren't running
       registration:
         info: Change the way that users register to the website
-        title: Registration Method
+       title: Registration Method
         methods:
           approval: Approve/Decline
           invite: Join by Invitation
@@ -130,7 +130,7 @@ en:
         username: Username
       title: Manage Users
   add_to_google_calendar: "Add to Google Calendar"
-  bigbluebutton: DA-VideoConference
+  bigbluebutton: DA-Video Conference
   bigbluebutton_exception: Oops, there was an error when starting the meeting!
   cancel: Cancel
   cookies:
@@ -198,13 +198,13 @@ en:
     designs: Custom Designs
     authentication: User Authentication
   footer:
-    powered_by: Powered by %{href}.
+    powered_by: Powered by Digital Adrenaline.
   forgot_password:
     subtitle: Forgot Password
     email: Email
     submit: Submit
   go_back: Go back
-  greenlight: DA-VideoConference
+  greenlight: Digital Adrenaline Video Conference
   header:
     all_recordings: All Recordings
     dropdown:
@@ -259,7 +259,7 @@ en:
         signup_info: To signup using your email, click the button below and follow the steps.
         signup_link: Sign Up
         signup:
-          info: A user that was invited has signed up to use DA-VideoConference.
+          info: A user that was invited has signed up to use Greenlight.
           admins_link: Visit the Organization Page
           subject: New DA-VideoConference User Sign Up
           username: The user signed up with the name %{name} and the email %{email}.
