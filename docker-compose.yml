@@ -3,8 +3,8 @@ version: '3'
 services:
   app:
     entrypoint: [bin/start]
-    image: dagreenlightprod:release-v2
-    container_name: dagreenlight
+    image: greenlight_local:latest
+    container_name: DA-Greenlight
     env_file: .env
     restart: unless-stopped
     ports:
