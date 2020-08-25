@@ -36,11 +36,7 @@ en:
         enabled: Enabled
         info: Only allow authenticated users to join a room
         title: Require Authentication for Rooms
-<<<<<<< HEAD
         user-info: You must sign in to DACS to join this room
-=======
-        user-info: You must sign in above to join this room.
->>>>>>> f82090fabce352e86ba49c8499cf6a1bf9d56a25
       branding:
         change: Change Image
         info: Change the branding image that appears in the top left corner
@@ -111,15 +107,11 @@ en:
       shared_access:
         info: Setting to disabled will remove the button from the Room options dropdown, preventing users from sharing rooms
         title: Allow Users to Share Rooms
-<<<<<<< HEAD
       subtitle: Customize DACS
-=======
-      subtitle: Customize Greenlight
       tabs:
         appearance: Appearance
         administration: Administration
         settings: Settings
->>>>>>> f82090fabce352e86ba49c8499cf6a1bf9d56a25
       title: Site Settings
     flash:
       approved: User has been successfully approved.
