@@ -27,6 +27,7 @@ describe User, type: :model do
   context 'validations' do
     it { should validate_presence_of(:name) }
     it { should validate_length_of(:name).is_at_most(256) }
+    it { should_not allow_value("https://www.bigbluebutton.org").for(:name) }
 
     it { should validate_presence_of(:provider) }
 
@@ -112,12 +113,39 @@ describe User, type: :model do
     end
   end
 
+  context '#ordered_rooms' do
+    it 'correctly orders the users rooms' do
+      user = create(:user)
+      room1 = create(:room, owner: user)
+      room2 = create(:room, owner: user)
+      room3 = create(:room, owner: user)
+      room4 = create(:room, owner: user)
+
+      room4.update_attributes(sessions: 1, last_session: "2020-02-24 19:52:57")
+      room3.update_attributes(sessions: 1, last_session: "2020-01-25 19:52:57")
+      room2.update_attributes(sessions: 1, last_session: "2019-09-05 19:52:57")
+      room1.update_attributes(sessions: 1, last_session: "2015-02-24 19:52:57")
+
+      rooms = user.ordered_rooms
+      expect(rooms[0]).to eq(user.main_room)
+      expect(rooms[1]).to eq(room4)
+      expect(rooms[2]).to eq(room3)
+      expect(rooms[3]).to eq(room2)
+      expect(rooms[4]).to eq(room1)
+    end
+  end
+
   context 'password reset' do
     it 'creates token and respective reset digest' do
       user = create(:user)
 
-      reset_digest_success = user.create_reset_digest
-      expect(reset_digest_success).to eq(true)
+      expect(user.create_reset_digest).to be_truthy
+    end
+
+    it 'correctly verifies the token' do
+      user = create(:user)
+      token = user.create_reset_digest
+      expect(User.exists?(reset_digest: User.hash_token(token))).to be true
     end
 
     it 'verifies if password reset link expired' do
@@ -143,50 +171,34 @@ describe User, type: :model do
       allow_any_instance_of(User).to receive(:greenlight_account?).and_return(true)
 
       @admin = create(:user, provider: @user.provider)
-      @admin.add_role :admin
+      @admin.set_role :admin
 
-      expect(@admin.admin_of?(@user)).to be true
+      expect(@admin.admin_of?(@user, "can_manage_users")).to be true
 
       @super_admin = create(:user, provider: "test")
-      @super_admin.add_role :super_admin
+      @super_admin.set_role :super_admin
 
-      expect(@super_admin.admin_of?(@user)).to be true
+      expect(@super_admin.admin_of?(@user, "can_manage_users")).to be true
     end
 
     it "returns false if the user is NOT an admin of another" do
       @admin = create(:user)
 
-      expect(@admin.admin_of?(@user)).to be false
+      expect(@admin.admin_of?(@user, "can_manage_users")).to be false
     end
 
     it "should get the highest priority role" do
       @admin = create(:user, provider: @user.provider)
-      @admin.add_role :admin
+      @admin.set_role :admin
 
-      expect(@admin.highest_priority_role.name).to eq("admin")
-    end
-
-    it "should skip adding the role if the user already has the role" do
-      @admin = create(:user, provider: @user.provider)
-      @admin.add_role :admin
-      @admin.add_role :admin
-
-      expect(@admin.roles.count).to eq(2)
+      expect(@admin.role.name).to eq("admin")
     end
 
     it "should add the role if the user doesn't already have the role" do
       @admin = create(:user, provider: @user.provider)
-      @admin.add_role :admin
+      @admin.set_role :admin
 
-      expect(@admin.roles.count).to eq(2)
-    end
-
-    it "should remove the role if the user has the role assigned to them" do
-      @admin = create(:user, provider: @user.provider)
-      @admin.add_role :admin
-      @admin.remove_role :admin
-
-      expect(@admin.roles.count).to eq(1)
+      expect(@admin.has_role?(:admin)).to eq(true)
     end
 
     it "has_role? should return false if the user doesn't have the role" do
@@ -195,7 +207,7 @@ describe User, type: :model do
 
     it "has_role? should return true if the user has the role" do
       @admin = create(:user, provider: @user.provider)
-      @admin.add_role :admin
+      @admin.set_role :admin
 
       expect(@admin.has_role?(:admin)).to eq(true)
     end
@@ -203,8 +215,8 @@ describe User, type: :model do
     it "with_role should return all users with the role" do
       @admin1 = create(:user, provider: @user.provider)
       @admin2 = create(:user, provider: @user.provider)
-      @admin1.add_role :admin
-      @admin2.add_role :admin
+      @admin1.set_role :admin
+      @admin2.set_role :admin
 
       expect(User.with_role(:admin).count).to eq(2)
     end
@@ -212,17 +224,10 @@ describe User, type: :model do
     it "without_role should return all users without the role" do
       @admin1 = create(:user, provider: @user.provider)
       @admin2 = create(:user, provider: @user.provider)
-      @admin1.add_role :admin
-      @admin2.add_role :admin
+      @admin1.set_role :admin
+      @admin2.set_role :admin
 
       expect(User.without_role(:admin).count).to eq(1)
-    end
-
-    it "all_users_with_roles should return all users with at least one role" do
-      @admin1 = create(:user, provider: @user.provider)
-      @admin2 = create(:user, provider: @user.provider)
-
-      expect(User.all_users_with_roles.count).to eq(3)
     end
   end
 

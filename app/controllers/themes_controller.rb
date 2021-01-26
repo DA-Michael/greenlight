@@ -17,7 +17,7 @@
 # with BigBlueButton; if not, see <http://www.gnu.org/licenses/>.
 
 class ThemesController < ApplicationController
-  skip_before_action :redirect_to_https, :maintenance_mode?, :migration_error?, :user_locale,
+  skip_before_action :block_unknown_hosts, :redirect_to_https, :maintenance_mode?, :migration_error?, :user_locale,
     :check_admin_password, :check_user_role
 
   # GET /primary
@@ -26,7 +26,7 @@ class ThemesController < ApplicationController
     lighten_color = @settings.get_value("Primary Color Lighten") || Rails.configuration.primary_color_lighten_default
     darken_color = @settings.get_value("Primary Color Darken") || Rails.configuration.primary_color_darken_default
 
-    file_name = Rails.root.join('app', 'assets', 'stylesheets', 'utilities', '_primary_themes.scss')
+    file_name = Rails.root.join('lib', 'assets', '_primary_themes.scss')
     @file_contents = File.read(file_name)
 
     # Include the variables and covert scss file to css

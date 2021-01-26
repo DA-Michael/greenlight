@@ -84,8 +84,18 @@
   color: white !important;
 }
 
-.manage-users-tab {
-  &:hover {
-    cursor: pointer;
-  }
+#manage-users-nav.nav-tabs .nav-item {
+  margin-bottom: -1px;
+}
+
+#merge-account-arrow {
+  position: absolute;
+  top: 47%;
+  right: 47%;
+  z-index: 999;
+  background: white;
+}
+
+.admin-tabs {
+  justify-content: space-around;
 }

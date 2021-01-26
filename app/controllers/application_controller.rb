@@ -18,18 +18,16 @@
 
 class ApplicationController < ActionController::Base
   include BbbServer
+  include Errors
 
-  before_action :redirect_to_https, :set_user_domain, :set_user_settings, :maintenance_mode?, :migration_error?,
-    :user_locale, :check_admin_password, :check_user_role
-
-  # Manually handle BigBlueButton errors
-  rescue_from BigBlueButton::BigBlueButtonException, with: :handle_bigbluebutton_error
+  before_action :block_unknown_hosts, :redirect_to_https, :set_user_domain, :set_user_settings, :maintenance_mode?,
+  :migration_error?, :user_locale, :check_admin_password, :check_user_role
 
   protect_from_forgery with: :exceptions
 
   # Retrieves the current user.
   def current_user
-    @current_user ||= User.where(id: session[:user_id]).includes(:roles).first
+    @current_user ||= User.includes(:role, :main_room).find_by(id: session[:user_id])
 
     if Rails.configuration.loadbalanced_configuration
       if @current_user && !@current_user.has_role?(:super_admin) &&
@@ -45,6 +43,12 @@ class ApplicationController < ActionController::Base
 
   def bbb_server
     @bbb_server ||= Rails.configuration.loadbalanced_configuration ? bbb(@user_domain) : bbb("greenlight")
+  end
+
+  # Block unknown hosts to mitigate host header injection attacks
+  def block_unknown_hosts
+    return if Rails.configuration.hosts.blank?
+    raise UnsafeHostError, "#{request.host} is not a safe host" unless Rails.configuration.hosts.include?(request.host)
   end
 
   # Force SSL
@@ -67,7 +71,7 @@ class ApplicationController < ActionController::Base
 
   # Sets the settinfs variable
   def set_user_settings
-    @settings = Setting.find_or_create_by(provider: @user_domain)
+    @settings = Setting.includes(:features).find_or_create_by(provider: @user_domain)
   end
 
   # Redirects the user to a Maintenance page if turned on
@@ -80,10 +84,10 @@ class ApplicationController < ActionController::Base
           help: I18n.t("errors.maintenance.help"),
         }
     end
-    if Rails.configuration.maintenance_window.present?
-      unless cookies[:maintenance_window] == Rails.configuration.maintenance_window
-        flash.now[:maintenance] = I18n.t("maintenance.window_alert", date: Rails.configuration.maintenance_window)
-      end
+
+    maintenance_string = @settings.get_value("Maintenance Banner").presence || Rails.configuration.maintenance_window
+    if maintenance_string.present?
+      flash.now[:maintenance] = maintenance_string unless cookies[:maintenance_window] == maintenance_string
     end
   end
 
@@ -97,7 +101,7 @@ class ApplicationController < ActionController::Base
     locale = if user && user.language != 'default'
       user.language
     else
-      http_accept_language.language_region_compatible_from(I18n.available_locales)
+      Rails.configuration.default_locale.presence || http_accept_language.language_region_compatible_from(I18n.available_locales)
     end
 
     begin
@@ -115,7 +119,7 @@ class ApplicationController < ActionController::Base
        current_user&.greenlight_account? && current_user&.authenticate(Rails.configuration.admin_password_default)
 
       flash.now[:alert] = I18n.t("default_admin",
-        edit_link: edit_user_path(user_uid: current_user.uid) + "?setting=password").html_safe
+        edit_link: change_password_path(user_uid: current_user.uid)).html_safe
     end
   end
 
@@ -172,6 +176,40 @@ class ApplicationController < ActionController::Base
   end
   helper_method :configured_providers
 
+  # Indicates whether users are allowed to share rooms
+  def shared_access_allowed
+    @settings.get_value("Shared Access") == "true"
+  end
+  helper_method :shared_access_allowed
+
+  # Indicates whether users are allowed to share rooms
+  def recording_consent_required?
+    @settings.get_value("Require Recording Consent") == "true"
+  end
+  helper_method :recording_consent_required?
+
+  # Returns a list of allowed file types
+  def allowed_file_types
+    Rails.configuration.allowed_file_types
+  end
+  helper_method :allowed_file_types
+
+  # Allows admins to edit a user's details
+  def can_edit_user?(user_to_edit, editting_user)
+    return user_to_edit.greenlight_account? if user_to_edit == editting_user
+
+    editting_user.admin_of?(user_to_edit, "can_manage_users")
+  end
+  helper_method :can_edit_user?
+
+  # Returns the page that the logo redirects to when clicked on
+  def home_page
+    return admins_path if current_user.has_role? :super_admin
+    return current_user.main_room if current_user.role.get_permission("can_create_rooms")
+    cant_create_rooms_path
+  end
+  helper_method :home_page
+
   # Parses the url for the user domain
   def parse_user_domain(hostname)
     return hostname.split('.').first if Rails.configuration.url_host.empty?
@@ -187,14 +225,31 @@ class ApplicationController < ActionController::Base
     payload[:host] = @user_domain
   end
 
-  # Manually Handle BigBlueButton errors
-  def handle_bigbluebutton_error
+  # Manually handle BigBlueButton errors
+  rescue_from BigBlueButton::BigBlueButtonException do |ex|
+    logger.error "BigBlueButtonException: #{ex}"
     render "errors/bigbluebutton_error"
   end
 
   # Manually deal with 401 errors
   rescue_from CanCan::AccessDenied do |_exception|
-    render "errors/greenlight_error"
+    if current_user
+      render "errors/greenlight_error"
+    else
+      # Store the current url as a cookie to redirect to after sigining in
+      cookies[:return_to] = request.url
+
+      # Get the correct signin path
+      path = if allow_greenlight_accounts?
+        signin_path
+      elsif Rails.configuration.loadbalanced_configuration
+        "#{Rails.configuration.relative_url_root}/auth/bn_launcher"
+      else
+        signin_path
+      end
+
+      redirect_to path
+    end
   end
 
   private
@@ -212,23 +267,40 @@ class ApplicationController < ActionController::Base
       session[:provider_exists] = @user_domain
     rescue => e
       logger.error "Error in retrieve provider info: #{e}"
-      # Use the default site settings
-      @user_domain = "greenlight"
-
+      @hide_signin = true
       if e.message.eql? "No user with that id exists"
+        set_default_settings
+
         render "errors/greenlight_error", locals: { message: I18n.t("errors.not_found.user_not_found.message"),
           help: I18n.t("errors.not_found.user_not_found.help") }
       elsif e.message.eql? "Provider not included."
+        set_default_settings
+
         render "errors/greenlight_error", locals: { message: I18n.t("errors.not_found.user_missing.message"),
           help: I18n.t("errors.not_found.user_missing.help") }
       elsif e.message.eql? "That user has no configured provider."
+        if Setting.exists?(provider: @user_domain)
+          # Keep the branding
+          @settings = Setting.find_by(provider: @user_domain)
+        else
+          set_default_settings
+        end
+
         render "errors/greenlight_error", locals: { status_code: 501,
           message: I18n.t("errors.no_provider.message"),
           help: I18n.t("errors.no_provider.help") }
       else
+        set_default_settings
+
         render "errors/greenlight_error", locals: { status_code: 500, message: I18n.t("errors.internal.message"),
           help: I18n.t("errors.internal.help"), display_back: true }
       end
     end
+  end
+
+  def set_default_settings
+    # Use the default site settings
+    @user_domain = "greenlight"
+    @settings = Setting.find_or_create_by(provider: @user_domain)
   end
 end

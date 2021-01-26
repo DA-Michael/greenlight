@@ -63,19 +63,6 @@ describe RoomsController, type: :controller do
       expect(response).to render_template(:join)
     end
 
-    it "should render cant_create_rooms if user doesn't have permission to create rooms" do
-      user_role = @user.highest_priority_role
-
-      user_role.update_permission("can_create_rooms", "false")
-      user_role.save!
-
-      @request.session[:user_id] = @user.id
-
-      get :show, params: { room_uid: @user.main_room }
-
-      expect(response).to render_template(:cant_create_rooms)
-    end
-
     it "should be able to search public recordings if user is not owner" do
       @request.session[:user_id] = @user.id
 
@@ -117,7 +104,7 @@ describe RoomsController, type: :controller do
 
     it "redirects to admin if user is a super_admin" do
       @request.session[:user_id] = @owner.id
-      @owner.add_role :super_admin
+      @owner.set_role :super_admin
 
       get :show, params: { room_uid: @owner.main_room, search: :none }
 
@@ -137,6 +124,53 @@ describe RoomsController, type: :controller do
       expect(flash[:alert]).to be_present
       expect(response).to redirect_to(root_path)
     end
+
+    it "redirects to root if owner is pending" do
+      @request.session[:user_id] = @owner.id
+      @owner.set_role :pending
+
+      get :show, params: { room_uid: @owner.main_room, search: :none }
+
+      expect(response).to redirect_to(root_path)
+    end
+
+    it "redirects to root if owner is banned" do
+      @request.session[:user_id] = @owner.id
+      @owner.set_role :denied
+
+      get :show, params: { room_uid: @owner.main_room, search: :none }
+
+      expect(response).to redirect_to(root_path)
+    end
+  end
+
+  describe "GET #cant_create_rooms" do
+    before do
+      @user = create(:user)
+      @owner = create(:user)
+    end
+
+    it "renders cant_create_rooms if user doesn't have permission to create rooms and has no shared rooms" do
+      @user.role.update_permission("can_create_rooms", "false")
+
+      @request.session[:user_id] = @user.id
+
+      get :cant_create_rooms
+
+      expect(response).to render_template(:cant_create_rooms)
+    end
+
+    it "displays the room if the user can't create rooms but has a shared room" do
+      @user.role.update_permission("can_create_rooms", "false")
+
+      SharedAccess.create(room_id: @owner.main_room.id, user_id: @user.id)
+
+      @request.session[:user_id] = @user.id
+
+      get :cant_create_rooms
+
+      expect(response).to redirect_to(@owner.main_room)
+    end
   end
 
   describe "POST #create" do
@@ -151,15 +185,31 @@ describe RoomsController, type: :controller do
       room_params = { name: name, "mute_on_join": "1",
         "require_moderator_approval": "1", "anyone_can_start": "1", "all_join_moderator": "1" }
       json_room_settings = "{\"muteOnStart\":true,\"requireModeratorApproval\":true," \
-        "\"anyoneCanStart\":true,\"joinModerator\":true}"
+        "\"anyoneCanStart\":true,\"joinModerator\":true,\"recording\":false}"
 
       post :create, params: { room: room_params }
 
-      r = @owner.secondary_rooms.last
+      r = @owner.rooms.last
       expect(r.name).to eql(name)
       expect(r.owner).to eql(@owner)
       expect(r.room_settings).to eql(json_room_settings)
       expect(response).to redirect_to(r)
+    end
+
+    it "should respond with JSON object of the room_settings" do
+      @request.session[:user_id] = @owner.id
+
+      @owner.main_room.update_attribute(:room_settings, { "muteOnStart": true, "requireModeratorApproval": true,
+      "anyoneCanStart": true, "joinModerator": true }.to_json)
+
+      json_room_settings = { "anyoneCanStart" => true,
+                             "joinModerator" => true,
+                             "muteOnStart" => true,
+                             "requireModeratorApproval" => true }
+
+      get :room_settings, params: { room_uid: @owner.main_room }, format: :json
+
+      expect(JSON.parse(response.body)).to eql(json_room_settings)
     end
 
     it "should redirect to root if not logged in" do
@@ -214,10 +264,9 @@ describe RoomsController, type: :controller do
 
     it "should use join name if user is not logged in and meeting running" do
       allow_any_instance_of(BigBlueButton::BigBlueButtonApi).to receive(:is_meeting_running?).and_return(true)
-
       post :join, params: { room_uid: @room, join_name: "Join Name" }
 
-      expect(response).to redirect_to(join_path(@owner.main_room, "Join Name", {}))
+      expect(response).to redirect_to(join_path(@owner.main_room, "Join Name", {}, response.cookies["guest_id"]))
     end
 
     it "should render wait if meeting isn't running" do
@@ -231,6 +280,7 @@ describe RoomsController, type: :controller do
 
     it "should join the room if the room has the anyone_can_start setting" do
       allow_any_instance_of(BigBlueButton::BigBlueButtonApi).to receive(:is_meeting_running?).and_return(false)
+      allow_any_instance_of(Setting).to receive(:get_value).and_return("optional")
 
       room = Room.new(name: "test")
       room.room_settings = "{\"muteOnStart\":false,\"joinViaHtml5\":false,\"anyoneCanStart\":true}"
@@ -243,7 +293,38 @@ describe RoomsController, type: :controller do
       expect(response).to redirect_to(join_path(room, @user.name, { user_is_moderator: false }, @user.uid))
     end
 
-    it "should join the room as moderator if room has the all_join_moderator setting" do
+    it "doesn't join the room if the room has the anyone_can_start setting but config is disabled" do
+      allow_any_instance_of(BigBlueButton::BigBlueButtonApi).to receive(:is_meeting_running?).and_return(false)
+      allow_any_instance_of(Setting).to receive(:get_value).and_return("disabled")
+
+      room = Room.new(name: "test")
+      room.room_settings = "{\"muteOnStart\":false,\"joinViaHtml5\":false,\"anyoneCanStart\":true}"
+      room.owner = @owner
+      room.save
+
+      @request.session[:user_id] = @user.id
+      post :join, params: { room_uid: room, join_name: @user.name }
+
+      expect(response).to render_template(:wait)
+    end
+
+    it "joins the room if the room doesn't have the anyone_can_start setting but config is set to enabled" do
+      allow_any_instance_of(BigBlueButton::BigBlueButtonApi).to receive(:is_meeting_running?).and_return(false)
+      allow_any_instance_of(Setting).to receive(:get_value).and_return("enabled")
+
+      room = Room.new(name: "test")
+      room.room_settings = "{\"anyoneCanStart\":false}"
+      room.owner = @owner
+      room.save
+
+      @request.session[:user_id] = @user.id
+      post :join, params: { room_uid: room, join_name: @user.name }
+
+      expect(response).to redirect_to(join_path(room, @user.name, { user_is_moderator: true }, @user.uid))
+    end
+
+    it "joins the room as moderator if room has the all_join_moderator setting" do
+      allow_any_instance_of(Setting).to receive(:get_value).and_return("optional")
       allow_any_instance_of(BigBlueButton::BigBlueButtonApi).to receive(:is_meeting_running?).and_return(true)
 
       room = Room.new(name: "test")
@@ -255,6 +336,36 @@ describe RoomsController, type: :controller do
       post :join, params: { room_uid: room, join_name: @user.name }
 
       expect(response).to redirect_to(join_path(room, @user.name, { user_is_moderator: true }, @user.uid))
+    end
+
+    it "joins the room as moderator if room doesn't have all_join_moderator but config is set to enabled" do
+      allow_any_instance_of(Setting).to receive(:get_value).and_return("enabled")
+      allow_any_instance_of(BigBlueButton::BigBlueButtonApi).to receive(:is_meeting_running?).and_return(true)
+
+      room = Room.new(name: "test")
+      room.room_settings = "{ }"
+      room.owner = @owner
+      room.save
+
+      @request.session[:user_id] = @user.id
+      post :join, params: { room_uid: room, join_name: @user.name }
+
+      expect(response).to redirect_to(join_path(room, @user.name, { user_is_moderator: true }, @user.uid))
+    end
+
+    it "doesn't join the room as moderator if room has the all_join_moderator setting but config is set to disabled" do
+      allow_any_instance_of(Setting).to receive(:get_value).and_return("disabled")
+      allow_any_instance_of(BigBlueButton::BigBlueButtonApi).to receive(:is_meeting_running?).and_return(true)
+
+      room = Room.new(name: "test")
+      room.room_settings = "{\"joinModerator\":true}"
+      room.owner = @owner
+      room.save
+
+      @request.session[:user_id] = @user.id
+      post :join, params: { room_uid: room, join_name: @user.name }
+
+      expect(response).to redirect_to(join_path(room, @user.name, { user_is_moderator: false }, @user.uid))
     end
 
     it "should render wait if the correct access code is supplied" do
@@ -310,6 +421,24 @@ describe RoomsController, type: :controller do
       expect(flash[:alert]).to be_present
       expect(response).to redirect_to(root_path)
     end
+
+    it "redirects to root if owner is pending" do
+      @request.session[:user_id] = @owner.id
+      @owner.set_role :pending
+
+      post :join, params: { room_uid: @room }
+
+      expect(response).to redirect_to(root_path)
+    end
+
+    it "redirects to root if owner is banned" do
+      @request.session[:user_id] = @owner.id
+      @owner.set_role :denied
+
+      post :join, params: { room_uid: @room }
+
+      expect(response).to redirect_to(root_path)
+    end
   end
 
   describe "DELETE #destroy" do
@@ -341,6 +470,45 @@ describe RoomsController, type: :controller do
       expect do
         delete :destroy, params: { room_uid: @user.main_room }
       end.to change { Room.count }.by(0)
+    end
+
+    it "allows admin to delete room" do
+      @admin = create(:user)
+      @admin.set_role :admin
+      @request.session[:user_id] = @admin.id
+
+      expect do
+        delete :destroy, params: { room_uid: @secondary_room }
+      end.to change { Room.count }.by(-1)
+
+      expect(response).to redirect_to(@admin.main_room)
+    end
+
+    it "does not allow admin to delete a users home room" do
+      @admin = create(:user)
+      @admin.set_role :admin
+      @request.session[:user_id] = @admin.id
+
+      expect do
+        delete :destroy, params: { room_uid: @user.main_room }
+      end.to change { Room.count }.by(0)
+
+      expect(flash[:alert]).to be_present
+      expect(response).to redirect_to(@admin.main_room)
+    end
+
+    it "does not allow an admin from a different context to delete room" do
+      allow_any_instance_of(User).to receive(:admin_of?).and_return(false)
+
+      @admin = create(:user)
+      @admin.set_role :admin
+      @request.session[:user_id] = @admin.id
+
+      expect do
+        delete :destroy, params: { room_uid: @secondary_room }
+      end.to change { Room.count }.by(0)
+
+      expect(response).to redirect_to(root_path)
     end
   end
 
@@ -374,6 +542,27 @@ describe RoomsController, type: :controller do
 
       expect(response).to redirect_to(root_path)
     end
+
+    it "redirects to join path if admin" do
+      @admin = create(:user)
+      @admin.set_role :admin
+      @request.session[:user_id] = @admin.id
+
+      post :start, params: { room_uid: @user.main_room }
+
+      expect(response).to redirect_to(join_path(@user.main_room, @admin.name, { user_is_moderator: true }, @admin.uid))
+    end
+
+    it "redirects to root path if not admin of current user" do
+      allow_any_instance_of(User).to receive(:admin_of?).and_return(false)
+      @admin = create(:user)
+      @admin.set_role :admin
+      @request.session[:user_id] = @admin.id
+
+      post :start, params: { room_uid: @user.main_room }
+
+      expect(response).to redirect_to(root_path)
+    end
   end
 
   describe "POST #update_settings" do
@@ -384,7 +573,7 @@ describe RoomsController, type: :controller do
 
     it "properly updates room name through the room settings modal and redirects to current page" do
       @request.session[:user_id] = @user.id
-      name = Faker::Games::Pokemon.name
+      name = Faker::Name.first_name
 
       room_params = { room_uid: @secondary_room.uid, room: { "name": name } }
 
@@ -396,9 +585,9 @@ describe RoomsController, type: :controller do
     it "properly updates room settings through the room settings modal and redirects to current page" do
       @request.session[:user_id] = @user.id
 
-      room_params = { "mute_on_join": "1", "name": @secondary_room.name }
+      room_params = { "mute_on_join": "1", "name": @secondary_room.name, "recording": "1" }
       formatted_room_params = "{\"muteOnStart\":true,\"requireModeratorApproval\":false," \
-        "\"anyoneCanStart\":false,\"joinModerator\":false}" # JSON string format
+        "\"anyoneCanStart\":false,\"joinModerator\":false,\"recording\":true}" # JSON string format
 
       expect { post :update_settings, params: { room_uid: @secondary_room.uid, room: room_params } }
         .to change { @secondary_room.reload.room_settings }
@@ -412,6 +601,35 @@ describe RoomsController, type: :controller do
       patch :update_settings, params: { room_uid: @secondary_room, setting: :rename_header, room_name: :name }
 
       expect(response).to redirect_to(@secondary_room)
+    end
+
+    it "allows admin to update room settings" do
+      @admin = create(:user)
+      @admin.set_role :admin
+      @request.session[:user_id] = @admin.id
+
+      room_params = { "mute_on_join": "1", "name": @secondary_room.name }
+      formatted_room_params = "{\"muteOnStart\":true,\"requireModeratorApproval\":false," \
+        "\"anyoneCanStart\":false,\"joinModerator\":false,\"recording\":false}" # JSON string format
+
+      expect { post :update_settings, params: { room_uid: @secondary_room.uid, room: room_params } }
+        .to change { @secondary_room.reload.room_settings }
+        .from(@secondary_room.room_settings).to(formatted_room_params)
+      expect(response).to redirect_to(@secondary_room)
+    end
+
+    it "does not allow admins from a different context to update room settings" do
+      allow_any_instance_of(User).to receive(:admin_of?).and_return(false)
+      @admin = create(:user)
+      @admin.set_role :admin
+      @request.session[:user_id] = @admin.id
+
+      room_params = { "mute_on_join": "1", "name": @secondary_room.name }
+
+      expect { post :update_settings, params: { room_uid: @secondary_room.uid, room: room_params } }
+        .not_to change { @secondary_room.reload.room_settings }
+
+      expect(response).to redirect_to(root_path)
     end
   end
 
@@ -465,7 +683,7 @@ describe RoomsController, type: :controller do
       post :join_specific_room, params: { join_room: { url: "abc" } }
 
       expect(flash[:alert]).to eq(I18n.t("room.no_room.invalid_room_uid"))
-      expect(response).to redirect_to room_path(@user.main_room)
+      expect(response).to redirect_to cant_create_rooms_path
     end
 
     it "should redirect the user to the room uid they supplied" do
@@ -478,6 +696,227 @@ describe RoomsController, type: :controller do
       post :join_specific_room, params: { join_room: { url: room_path(@user1.main_room) } }
 
       expect(response).to redirect_to room_path(@user1.main_room)
+    end
+  end
+
+  describe "POST #shared_access" do
+    before do
+      @user = create(:user)
+      @room = create(:room, owner: @user)
+      @user1 = create(:user)
+      allow(Rails.configuration).to receive(:shared_access_default).and_return("true")
+    end
+
+    it "shares a room with another user" do
+      @request.session[:user_id] = @user.id
+
+      post :shared_access, params: { room_uid: @room.uid, add: [@user1.uid] }
+
+      expect(SharedAccess.exists?(room_id: @room.id, user_id: @user1.id)).to be true
+      expect(flash[:success]).to be_present
+      expect(response).to redirect_to room_path(@room)
+    end
+
+    it "allows a user to view a shared room and start it" do
+      @request.session[:user_id] = @user.id
+      post :shared_access, params: { room_uid: @room.uid, add: [@user1.uid] }
+
+      allow(controller).to receive(:current_user).and_return(@user1)
+      get :show, params: { room_uid: @room.uid }
+      expect(response).to render_template(:show)
+    end
+
+    it "unshares a room from the user if they are removed from the list" do
+      SharedAccess.create(room_id: @room.id, user_id: @user1.id)
+      expect(SharedAccess.exists?(room_id: @room.id, user_id: @user1.id)).to be true
+
+      @request.session[:user_id] = @user.id
+      post :shared_access, params: { room_uid: @room.uid, add: [] }
+
+      expect(SharedAccess.exists?(room_id: @room.id, user_id: @user1.id)).to be false
+      expect(flash[:success]).to be_present
+      expect(response).to redirect_to room_path(@room)
+    end
+
+    it "doesn't allow a user to share a room they don't own" do
+      @request.session[:user_id] = @user1.id
+
+      post :shared_access, params: { room_uid: @room.uid, add: [@user1.uid] }
+
+      expect(SharedAccess.exists?(room_id: @room.id, user_id: @user1.id)).to be false
+      expect(response).to redirect_to root_path
+    end
+
+    it "disables shared room functionality if the site setting is disabled" do
+      allow_any_instance_of(Setting).to receive(:get_value).and_return("false")
+
+      @request.session[:user_id] = @user.id
+      post :shared_access, params: { room_uid: @room.uid, add: [@user1.uid] }
+      expect(SharedAccess.exists?(room_id: @room.id, user_id: @user1.id)).to be true
+
+      allow(controller).to receive(:current_user).and_return(@user1)
+      get :show, params: { room_uid: @room.uid }
+      expect(response).to render_template(:join)
+    end
+
+    it "allows admins to update room access" do
+      @admin = create(:user)
+      @admin.set_role :admin
+      @request.session[:user_id] = @admin.id
+
+      post :shared_access, params: { room_uid: @room.uid, add: [@user1.uid] }
+
+      expect(SharedAccess.exists?(room_id: @room.id, user_id: @user1.id)).to be true
+      expect(flash[:success]).to be_present
+      expect(response).to redirect_to room_path(@room)
+    end
+
+    it "redirects to root path if not admin of current user" do
+      allow_any_instance_of(User).to receive(:admin_of?).and_return(false)
+      @admin = create(:user)
+      @admin.set_role :admin
+      @request.session[:user_id] = @admin.id
+
+      post :shared_access, params: { room_uid: @room.uid, add: [] }
+
+      expect(response).to redirect_to(root_path)
+    end
+  end
+
+  describe "POST #remove_shared_access" do
+    before do
+      @user = create(:user)
+      @room = create(:room, owner: @user)
+      @user1 = create(:user)
+      allow(Rails.configuration).to receive(:shared_access_default).and_return("true")
+    end
+
+    it "unshares a room from the user if they click the remove button" do
+      SharedAccess.create(room_id: @room.id, user_id: @user1.id)
+      expect(SharedAccess.exists?(room_id: @room.id, user_id: @user1.id)).to be true
+
+      @request.session[:user_id] = @user1.id
+      post :remove_shared_access, params: { room_uid: @room.uid, user_id: @user1.id }
+
+      expect(SharedAccess.exists?(room_id: @room.id, user_id: @user1.id)).to be false
+      expect(flash[:success]).to be_present
+      expect(response).to redirect_to @user1.main_room
+    end
+
+    it "doesn't allow some random user to change share access" do
+      @user2 = create(:user)
+
+      SharedAccess.create(room_id: @room.id, user_id: @user1.id)
+      expect(SharedAccess.exists?(room_id: @room.id, user_id: @user1.id)).to be true
+
+      @request.session[:user_id] = @user2.id
+      post :remove_shared_access, params: { room_uid: @room.uid, user_id: @user1.id }
+
+      expect(SharedAccess.exists?(room_id: @room.id, user_id: @user1.id)).to be true
+      expect(response).to redirect_to root_path
+    end
+  end
+
+  describe "POST #preupload_presentation" do
+    before do
+      @user = create(:user)
+      @file = fixture_file_upload('files/sample.pdf', 'application/pdf')
+      @invalid_file = fixture_file_upload('files/invalid.bmp', 'image/bmp')
+      allow(Rails.configuration).to receive(:preupload_presentation_default).and_return("true")
+    end
+
+    it "adds a presentation to the room" do
+      @request.session[:user_id] = @user.id
+
+      post :preupload_presentation, params: { room_uid: @user.main_room, room: { presentation: @file } }
+
+      expect(@user.main_room.presentation.attached?).to be true
+      expect(flash[:success]).to be_present
+      expect(response).to redirect_to @user.main_room
+    end
+
+    it "rejects file types that are not allowed" do
+      @request.session[:user_id] = @user.id
+
+      post :preupload_presentation, params: { room_uid: @user.main_room, room: { presentation: @invalid_file } }
+
+      expect(@user.main_room.presentation.attached?).to be false
+      expect(flash[:alert]).to be_present
+      expect(response).to redirect_to @user.main_room
+    end
+
+    it "allows admins to add a presentation to the room" do
+      allow_any_instance_of(User).to receive(:admin_of?).and_return(true)
+      @admin = create(:user)
+      @admin.set_role :admin
+      @request.session[:user_id] = @admin.id
+
+      post :preupload_presentation, params: { room_uid: @user.main_room, room: { presentation: @file } }
+
+      expect(@user.main_room.presentation.attached?).to be true
+      expect(flash[:success]).to be_present
+      expect(response).to redirect_to @user.main_room
+    end
+
+    it "redirects to root path if not admin of current user" do
+      allow_any_instance_of(User).to receive(:admin_of?).and_return(false)
+      @admin = create(:user)
+      @admin.set_role :admin
+      @request.session[:user_id] = @admin.id
+
+      post :preupload_presentation, params: { room_uid: @user.main_room, room: { presentation: @file } }
+
+      expect(response).to redirect_to(root_path)
+    end
+  end
+
+  describe "POST #remove_presentation" do
+    before do
+      @user = create(:user)
+      @user.main_room.presentation.attach(fixture_file_upload('files/sample.pdf', 'application/pdf'))
+      allow(Rails.configuration).to receive(:shared_access_default).and_return("true")
+    end
+
+    it "removes a presentation from a room" do
+      @request.session[:user_id] = @user.id
+
+      expect(@user.main_room.presentation.attached?).to be true
+
+      post :remove_presentation, params: { room_uid: @user.main_room }
+
+      @user.main_room.reload
+
+      expect(@user.main_room.presentation.attached?).to be false
+      expect(flash[:success]).to be_present
+      expect(response).to redirect_to @user.main_room
+    end
+
+    it "allows admins to remove a presentation from a room" do
+      allow_any_instance_of(User).to receive(:admin_of?).and_return(true)
+      @admin = create(:user)
+      @admin.set_role :admin
+      @request.session[:user_id] = @admin.id
+
+      expect(@user.main_room.presentation.attached?).to be true
+
+      post :remove_presentation, params: { room_uid: @user.main_room }
+
+      @user.main_room.reload
+
+      expect(@user.main_room.presentation.attached?).to be false
+      expect(flash[:success]).to be_present
+      expect(response).to redirect_to @user.main_room
+    end
+
+    it "redirects to root path if not admin of current user" do
+      allow_any_instance_of(User).to receive(:admin_of?).and_return(false)
+      @admin = create(:user)
+      @admin.set_role :admin
+      @request.session[:user_id] = @admin.id
+
+      post :preupload_presentation, params: { room_uid: @user.main_room, room: { presentation: @file } }
+
+      expect(response).to redirect_to(root_path)
     end
   end
 end

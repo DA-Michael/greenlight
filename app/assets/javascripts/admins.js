@@ -41,9 +41,97 @@ $(document).on('turbolinks:load', function(){
 
         updateTabParams(this.id)
       })
+
+      $('.selectpicker').selectpicker({
+        liveSearchPlaceholder: getLocalizedString('javascript.search.start')
+      });
+      // Fixes turbolinks issue with bootstrap select
+      $(window).trigger('load.bs.select.data-api');
+      
+      // Display merge accounts modal with correct info
+      $(".merge-user").click(function() {
+        // Update the path of save button
+        $("#merge-save-access").attr("data-path", $(this).data("path"))
+        let userInfo = $(this).data("info")
+        $("#merge-to").html("") // Clear current inputs
+
+        let spanName = document.createElement("span"),
+        spanEmail = document.createElement("span"),
+        spanUid = document.createElement("span");
+        spanName.innerText = userInfo.name
+        spanEmail.setAttribute('class', 'text-muted d-block')
+        spanEmail.innerText = userInfo.email
+        spanUid.setAttribute('class', 'text-muted d-block')
+        spanUid.innerText = userInfo.uid
+
+        $("#merge-to").append(spanName, spanEmail, spanUid)
+      })
+
+      $("#mergeUserModal").on("show.bs.modal", function() {
+        $(".selectpicker").selectpicker('val','')
+      })
+  
+      $(".bootstrap-select").on("click", function() {
+        $(".bs-searchbox").siblings().hide()
+      })
+
+      $("#merge-user-select ~ button").on("click", function() {
+        $(".bs-searchbox").siblings().hide()
+      })
+  
+      $(".bs-searchbox input").on("input", function() {
+        if ($(".bs-searchbox input").val() == '' || $(".bs-searchbox input").val().length < 3) {
+          $(".select-options").remove()
+          $(".bs-searchbox").siblings().hide()
+        } else {
+          // Manually populate the dropdown
+          $.get($("#merge-user-select").data("path"), { search: $(".bs-searchbox input").val() }, function(users) {
+            $(".select-options").remove()
+            if (users.length > 0) {
+              users.forEach(function(user) {
+                let opt = document.createElement("option")
+                $(opt).val(JSON.stringify({uid: user.uid, email: user.email, name: user.name}))
+                $(opt).text(user.name)
+                $(opt).addClass("select-options")
+                $(opt).attr("data-subtext", user.email)
+                $("#merge-user-select").append(opt)
+              })
+              // Only refresh the select dropdown if there are results to show
+              $('#merge-user-select').selectpicker('refresh');
+            } 
+            $(".bs-searchbox").siblings().show()
+          })     
+        }
+      })
+
+      // User selects an option from the Room Access dropdown
+      $(".bootstrap-select").on("changed.bs.select", function(){
+        // Get the uid of the selected user
+        let user = $(".selectpicker").selectpicker('val')
+        if (user != "") {
+          let userInfo = JSON.parse(user)
+          $("#merge-from").html("") // Clear current input
+
+          let spanName = document.createElement("span"),
+          spanEmail = document.createElement("span"),
+          spanUid = document.createElement("span");
+          spanName.innerText = userInfo.name
+          spanEmail.setAttribute('class', 'text-muted d-block')
+          spanEmail.innerText = userInfo.email
+          spanUid.setAttribute('class', 'text-muted d-block')
+          spanUid.id = 'from-uid'
+          spanUid.innerText = userInfo.uid
+
+          $("#merge-from").append(spanName, spanEmail, spanUid)
+        }
+      })
     }
     else if(action == "site_settings"){
-      loadColourSelectors()
+      var urlParams = new URLSearchParams(window.location.search);
+      // Only load the colour selectors if on the appearance tab
+      if (urlParams.get("tab") == null || urlParams.get("tab") == "appearance") {
+        loadColourSelectors()
+      }
     }
     else if (action == "roles"){
       // Refreshes the new role modal
@@ -52,7 +140,7 @@ $(document).on('turbolinks:load', function(){
       })
 
       // Updates the colour picker to the correct colour
-      role_colour = $("#role-colorinput-regular").data("colour")
+      let role_colour = $("#role-colorinput-regular").data("colour")
       $("#role-colorinput-regular").css("background-color", role_colour);
       $("#role-colorinput-regular").css("border-color", role_colour);
 
@@ -76,7 +164,41 @@ $(document).on('turbolinks:load', function(){
 // Change the branding image to the image provided
 function changeBrandingImage(path) {
   var url = $("#branding-url").val()
-  $.post(path, {value: url})
+  $.post(path, {value: url, tab: "appearance"})
+}
+
+// Change the Legal URL to the one provided
+function changeLegalURL(path) {
+  var url = $("#legal-url").val()
+  $.post(path, {value: url, tab: "administration"})
+}
+
+// Change the Privacy Policy URL to the one provided
+function changePrivacyPolicyURL(path) {
+  var url = $("#privpolicy-url").val()
+  $.post(path, {value: url, tab: "administration"})
+}
+
+// Display the maintenance Banner
+function displayMaintenanceBanner(path) {
+  var message = $("#maintenance-banner").val()
+  $.post(path, {value: message, tab: "administration"})
+}
+
+// Clear the maintenance Banner
+function clearMaintenanceBanner(path) {
+  $.post(path, {value: "", tab: "administration"})
+}
+
+// Change the email mapping to the string provided
+function changeEmailMapping(path) {
+  var url = $("#email-mapping").val()
+  $.post(path, {value: url, tab: "registration"})
+}
+
+function mergeUsers() {
+  let userToMerge = $("#from-uid").text()
+  $.post($("#merge-save-access").data("path"), {merge: userToMerge})
 }
 
 // Filters by role
@@ -174,13 +296,13 @@ function loadColourSelectors() {
   })
 
   pickrLighten.on("save", (color, instance) => {
-    $.post($("#coloring-path-lighten").val(), {value: color.toHEXA().toString()}).done(function() {
+    $.post($("#coloring-path-lighten").val(), {value: color.toHEXA().toString(), tab: "appearance"}).done(function() {
       location.reload()
     });
   })
 
   pickrDarken.on("save", (color, instance) => {
-    $.post($("#coloring-path-darken").val(), {value: color.toHEXA().toString()}).done(function() {
+    $.post($("#coloring-path-darken").val(), {value: color.toHEXA().toString(), tab: "appearance"}).done(function() {
       location.reload()
     });
   })

@@ -19,7 +19,7 @@
 require "rails_helper"
 
 def random_valid_user_params
-  pass = Faker::Internet.password(8)
+  pass = Faker::Internet.password(min_length: 8)
   {
     user: {
       name: Faker::Name.first_name,
@@ -76,13 +76,12 @@ describe PasswordResetsController, type: :controller do
   describe "PATCH #update" do
     before do
       allow(Rails.configuration).to receive(:enable_email_verification).and_return(true)
+      @user = create(:user, provider: "greenlight")
     end
 
     context "valid user" do
       it "reloads page with notice if password is empty" do
-        token = "reset_token"
-
-        allow(controller).to receive(:valid_user).and_return(nil)
+        token = @user.create_reset_digest
         allow(controller).to receive(:check_expiration).and_return(nil)
 
         params = {
@@ -97,9 +96,8 @@ describe PasswordResetsController, type: :controller do
       end
 
       it "reloads page with notice if password is confirmation doesn't match" do
-        token = "reset_token"
+        token = @user.create_reset_digest
 
-        allow(controller).to receive(:valid_user).and_return(nil)
         allow(controller).to receive(:check_expiration).and_return(nil)
 
         params = {
@@ -115,19 +113,13 @@ describe PasswordResetsController, type: :controller do
       end
 
       it "updates attributes if the password update is a success" do
-        user = create(:user)
-        token = "reset_token"
+        user = create(:user, provider: "greenlight")
+        old_digest = user.password_digest
 
-        cost = ActiveModel::SecurePassword.min_cost ? BCrypt::Engine::MIN_COST : BCrypt::Engine.cost
-        user.reset_digest = BCrypt::Password.create(token, cost: cost)
-
-        allow(controller).to receive(:valid_user).and_return(nil)
         allow(controller).to receive(:check_expiration).and_return(nil)
-        controller.instance_variable_set(:@user, user)
 
         params = {
-          id: token,
-          email: user.email,
+          id: user.create_reset_digest,
           user: {
             password: :password,
             password_confirmation: :password,
@@ -135,6 +127,10 @@ describe PasswordResetsController, type: :controller do
         }
 
         patch :update, params: params
+
+        user.reload
+
+        expect(old_digest.eql?(user.password_digest)).to be false
         expect(response).to redirect_to(root_path)
       end
     end

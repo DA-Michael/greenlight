@@ -48,6 +48,9 @@ module AuthValues
     case auth['provider']
     when :twitter
       auth['info']['image'].gsub("http", "https").gsub("_normal", "")
+    when :ldap
+      return auth['info']['image'] if auth['info']['image']&.starts_with?("http")
+      ""
     else
       auth['info']['image']
     end
@@ -59,8 +62,8 @@ module AuthValues
 
       role_provider = auth['provider'] == "bn_launcher" ? auth['info']['customer'] : "greenlight"
       roles.each do |role_name|
-        role = Role.where(provider: role_provider, name: role_name).first
-        user.roles << role unless role.nil?
+        role = Role.find_by(provider: role_provider, name: role_name)
+        user.set_role(role_name) if !role.nil? && !user.has_role?(role_name)
       end
     end
   end

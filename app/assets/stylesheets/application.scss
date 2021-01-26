@@ -36,14 +36,16 @@
 @import "tabler-custom";
 @import "font-awesome-sprockets";
 @import "font-awesome";
+@import "monolith.min.scss";
+@import "bootstrap-select.min";
 
 @import "utilities/variables";
 @import "admins";
 @import "main";
 @import "rooms";
 @import "sessions";
-@import "monolith.min.scss";
 @import "utilities/fonts";
+@import "users";
 
 * {
   outline: none !important;
@@ -132,17 +134,19 @@ a {
 }
 
 .cookies-banner {
-  height: $footer-height;
   color: white;
   background-color: $button-color-blue;
-
   #cookies-agree-button {
-    background-color: green !important;
+    margin: 0;
   }
 }
 
 input:focus {
     border-color: $primary !important;
+}
+
+.input-group button:focus {
+    box-shadow: none !important;
 }
 
 .list-group-item-action.active {
@@ -178,4 +182,8 @@ table {
 
 #delete-confirm:disabled {
   cursor: not-allowed;
+}
+
+.btn i {
+  transition: all .15s;
 }
